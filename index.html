@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Facturation</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font:15px/1.4 system-ui,Helvetica,Arial,sans-serif;background:#f5f6f8;color:#222}
+#app{max-width:920px;margin:auto;padding:12px}
+#nav{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:12px}
+button,select,input,textarea{font:inherit;padding:7px 10px;border:1px solid #bbb;border-radius:6px;background:#fff}
+button{cursor:pointer}button.p{background:#1f3a5f;color:#fff;border-color:#1f3a5f}button.on{background:#dde6f3}button.d{color:#b00}
+table{width:100%;border-collapse:collapse;background:#fff}td,th{padding:8px;border-bottom:1px solid #e5e5e5;text-align:left}
+tr.r{cursor:pointer}tr.r:hover{background:#f0f4fa}
+label{display:block;margin:8px 0;font-size:13px;color:#555}label input,label select,label textarea{display:block;width:100%;margin-top:3px;color:#222}
+label.c{display:flex;gap:8px;align-items:center}label.c input{width:auto;margin:0}
+.card{background:#fff;padding:14px;border-radius:8px;margin-bottom:12px}.g{display:grid;grid-template-columns:1fr 1fr;gap:0 12px}
+.bar{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.m{color:#666;font-size:13px}small{color:#777;font-weight:400}
+.lk input{padding:4px 6px}.lk td{padding:4px}
+#sheet{display:none;position:fixed;inset:0;background:#fff;overflow:auto;z-index:9}#sheet.on{display:block}
+.sh{font:13px/1.45 Helvetica,Arial,sans-serif;max-width:780px;margin:auto;padding:24px}
+.sh h1{margin:0;font-size:26px}.sh table{background:none}.sh th{color:#fff;font-size:12px}.sh td,.sh th{padding:6px;border-bottom:1px solid #ddd}
+.sh .tl{display:flex;justify-content:space-between;gap:20px;margin:18px 0}.sh .tt{margin-left:auto;width:260px}.sh .tt td{border:0}
+.sh .ft{font-size:11px;color:#555;margin-top:18px;border-top:1px solid #ddd;padding-top:8px}
+@media print{#app,.np{display:none!important}#sheet.on{position:static;overflow:visible}body{background:#fff}@page{margin:12mm}}
+@media(max-width:600px){.g{grid-template-columns:1fr}}
+</style></head><body>
+<div id="app"><div id="nav"></div><div id="main"></div></div>
+<div id="sheet"></div>
+<script>
+// ====== CONFIG ======
+const CLIENT_ID='599650965563-e8nrnj54iuavb6mskkkkhio2ogg5c9ad.apps.googleusercontent.com';
+const DRIVE_FILE='evd-facturation.json';
+// ====== ÉTAT ======
+const $=id=>document.getElementById(id),uid=()=>Math.random().toString(36).slice(2,10),now=()=>Date.now();
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const eur=n=>new Intl.NumberFormat('fr-FR',{style:'currency',currency:'EUR'}).format(n||0);
+const r2=n=>Math.round((n+Number.EPSILON)*100)/100,today=()=>new Date().toISOString().slice(0,10);
+const addD=(d,n)=>{const x=new Date(d+'T12:00');x.setDate(x.getDate()+n);return x.toISOString().slice(0,10)};
+const fd=d=>d?new Date(d+'T12:00').toLocaleDateString('fr-FR'):'';
+let S;try{S=JSON.parse(localStorage.getItem('evd'))}catch(e){}
+S=S||{companies:[],clients:[],items:[],invoices:[],cur:null};
+let tok=null,tm=null,V='invoices',K,R,E;
+const save=()=>{S.u=now();localStorage.setItem('evd',JSON.stringify(S));clearTimeout(tm);if(tok)tm=setTimeout(()=>sync().catch(e=>note('Sync : '+e.message)),2500)};
+const up=(k,r)=>{r.u=now();const i=S[k].findIndex(x=>x.id===r.id);i<0?S[k].push(r):S[k][i]=r};
+const live=k=>S[k].filter(r=>!r.del&&(k==='companies'||r.cid===S.cur));
+const company=id=>S.companies.find(c=>c.id===id)||{};
+const cn=c=>c?(c.type==='particulier'?`${c.first||''} ${c.name||''}`.trim():c.name):'';
+const note=t=>{const n=$('note');if(n)n.textContent=t};
+// ====== SCHÉMAS ======
+const UNITS=['heure','jour','forfait','pièce','kg','m²','mois'];
+const T={
+ companies:{t:'Entreprise',d:{prefix:'F',delay:30,color:'#1f3a5f'},cols:r=>[r.name,r.siret],f:[
+  ['name','Raison sociale'],['legal','Forme / capital / RCS (ex : SAS au capital de 1 000 € – RCS Paris)'],['siret','SIRET'],['tva','N° TVA intracommunautaire'],
+  ['franchise','TVA non applicable (art. 293 B du CGI)','chk'],['addr','Adresse'],['zip','Code postal'],['city','Ville'],['email','Email'],
+  ['iban','IBAN'],['bic','BIC'],['prefix','Préfixe des numéros de facture'],['delay','Délai de paiement (jours)','number'],['color','Couleur','color']]},
+ clients:{t:'Client',d:{type:'pro'},cols:r=>[cn(r),r.type,r.city],f:[
+  ['type','Type de client','sel',['pro','particulier']],['name','Nom / raison sociale'],['first','Prénom','','q'],['addr','Adresse'],['zip','Code postal'],['city','Ville'],
+  ['siret','SIRET','','p'],['tva','N° TVA','','p'],['email','Email (optionnel)']]},
+ items:{t:'Prestation / produit',d:{unit:'heure',vat:20,price:0},cols:r=>[r.label,r.unit,eur(r.price)],f:[
+  ['label','Libellé'],['unit','Unité','sel',UNITS],['price','Prix unitaire HT (€)','number'],['vat','TVA (%)','sel',[20,10,5.5,2.1,0]]]}};
+// ====== NAVIGATION ======
+function go(v){V=v;K=null;const cs=live('companies');if(!S.cur||!cs.find(c=>c.id===S.cur))S.cur=cs[0]?.id||null;
+ const tabs=[['invoices','Factures'],['clients','Clients'],['items','Catalogue'],['companies','Entreprises'],['sync','Sauvegarde']];
+ $('nav').innerHTML=`<select onchange="S.cur=this.value;save();go(V)">${cs.map(c=>`<option value="${c.id}" ${c.id===S.cur?'selected':''}>${esc(c.name)}</option>`).join('')||'<option>— aucune entreprise —</option>'}</select>`+
+  tabs.map(([k,l])=>`<button class="${k===v?'on':''}" onclick="go('${k}')">${l}</button>`).join('');
+ ({invoices:vInv,clients:()=>vList('clients'),items:()=>vList('items'),companies:()=>vList('companies'),sync:vSync})[v]()}
+function vList(k){const rows=live(k);$('main').innerHTML=`<div class="bar"><button class="p" onclick="edit('${k}')">+ Ajouter : ${T[k].t}</button></div>`+
+ (rows.length?`<table>${rows.map(r=>`<tr class="r" onclick="edit('${k}','${r.id}')">${T[k].cols(r).map(c=>`<td>${esc(c)}</td>`).join('')}</tr>`).join('')}</table>`:'<p class="m">Rien pour le moment.</p>')}
+function edit(k,id){if(k!=='companies'&&!S.cur){alert("Crée d'abord une entreprise.");return go('companies')}
+ K=k;R=id?{...S[k].find(r=>r.id===id)}:{id:uid(),...(k==='companies'?{}:{cid:S.cur}),...T[k].d};draw()}
+function draw(){const fs=T[K].f.filter(([,,,,w])=>!w||(w==='q'?R.type==='particulier':R.type!=='particulier'));
+ $('main').innerHTML=`<div class="card"><h2>${T[K].t}</h2><div class="g">${fs.map(([k,l,t,o])=>{const v=R[k]??'';
+  if(t==='chk')return`<label class="c"><input type="checkbox" ${v?'checked':''} onchange="R.${k}=this.checked">${l}</label>`;
+  if(t==='sel')return`<label>${l}<select onchange="R.${k}=${k==='vat'?'+this.value':'this.value'};${k==='type'?'draw()':''}">${o.map(x=>`<option ${x==v?'selected':''}>${x}</option>`).join('')}</select></label>`;
+  return`<label>${l}<input type="${t||'text'}" value="${esc(v)}" oninput="R.${k}=${t==='number'?'+this.value':'this.value'}"></label>`}).join('')}</div>
+ <div class="bar"><button class="p" onclick="saveR()">Enregistrer</button><button onclick="go(V)">Annuler</button>${S[K].find(r=>r.id===R.id)?'<button class="d" onclick="delR()">Supprimer</button>':''}</div></div>`}
+function saveR(){if(!(R.name||R.label))return alert('Nom requis');up(K,R);if(K==='companies'&&!S.cur)S.cur=R.id;save();go(V)}
+function delR(){if(confirm('Supprimer ?')){R.del=true;up(K,R);save();go(V)}}
+// ====== FACTURES ======
+function tot(i){const by={};let ht=0;i.lines.forEach(l=>{const t=r2(l.qty*l.price);ht+=t;by[l.vat]=(by[l.vat]||0)+t});
+ const fr=company(i.cid).franchise;let tva=0;const rows=Object.entries(by).map(([v,b])=>{const a=fr?0:r2(b*v/100);tva+=a;return[v,r2(b),a]});return{ht:r2(ht),tva:r2(tva),ttc:r2(ht+tva),rows}}
+const dueOf=i=>i.due||addD(i.date,company(i.cid).delay??30);
+const stOf=i=>i.status==='emise'&&dueOf(i)<today()?'en retard':i.status;
+function vInv(){const rows=live('invoices').sort((a,b)=>b.date.localeCompare(a.date));
+ $('main').innerHTML=`<div class="bar"><button class="p" onclick="newInv()">+ Nouvelle facture</button></div>`+(rows.length?`<table>${rows.map(i=>`<tr class="r" onclick="openInv('${i.id}')"><td>${esc(i.number||'Brouillon')}</td><td>${esc(cn(S.clients.find(c=>c.id===i.clientId)))}</td><td>${fd(i.date)}</td><td>${eur(tot(i).ttc)}</td><td>${stOf(i)}</td></tr>`).join('')}</table>`:'<p class="m">Aucune facture.</p>')}
+function newInv(){if(!S.cur){alert("Crée d'abord une entreprise.");return go('companies')}E={id:uid(),cid:S.cur,clientId:'',date:today(),period:'',status:'brouillon',lines:[]};invForm()}
+function openInv(id){E=JSON.parse(JSON.stringify(S.invoices.find(i=>i.id===id)));invForm()}
+function invForm(){const lk=E.status!=='brouillon',dis=lk?'disabled':'',cl=live('clients'),it=live('items');
+ $('main').innerHTML=`<div class="card"><h2>${esc(E.number||'Nouvelle facture')} <small>${stOf(E)}</small></h2><div class="g">
+ <label>Client<select ${dis} onchange="E.clientId=this.value"><option value="">— choisir —</option>${cl.map(c=>`<option value="${c.id}" ${c.id===E.clientId?'selected':''}>${esc(cn(c))} (${c.type})</option>`).join('')}</select></label>
+ <label>Date d'émission<input type="date" ${dis} value="${E.date}" onchange="E.date=this.value"></label>
+ <label>Période / date de la prestation<input ${dis} value="${esc(E.period)}" placeholder="ex : Juillet 2026" oninput="E.period=this.value"></label>
+ <label>Référence client / commande<input ${dis} value="${esc(E.ref||'')}" oninput="E.ref=this.value"></label></div>
+ <table class="lk"><tr><th>Désignation</th><th>Qté</th><th>Unité</th><th>PU HT</th><th>TVA %</th><th>Total HT</th><th></th></tr>${E.lines.map((l,n)=>`<tr>
+  <td><input ${dis} value="${esc(l.label)}" oninput="E.lines[${n}].label=this.value"></td>
+  <td><input ${dis} type="number" step="any" style="width:70px" value="${l.qty}" oninput="E.lines[${n}].qty=+this.value;rt()"></td>
+  <td><input ${dis} style="width:70px" value="${esc(l.unit)}" oninput="E.lines[${n}].unit=this.value"></td>
+  <td><input ${dis} type="number" step="any" style="width:80px" value="${l.price}" oninput="E.lines[${n}].price=+this.value;rt()"></td>
+  <td><input ${dis} type="number" step="any" style="width:60px" value="${l.vat}" oninput="E.lines[${n}].vat=+this.value;rt()"></td>
+  <td id="lt${n}">${eur(r2(l.qty*l.price))}</td><td>${lk?'':`<button class="d" onclick="E.lines.splice(${n},1);invForm()">×</button>`}</td></tr>`).join('')}</table>
+ ${lk?'':`<div class="bar"><select onchange="addL(this.value)"><option value="">+ Ajouter depuis le catalogue…</option>${it.map(x=>`<option value="${x.id}">${esc(x.label)} – ${eur(x.price)}/${x.unit}</option>`).join('')}</select>
+  <button onclick="addL('')">+ Ligne libre</button></div>`}
+ <p><b id="tt"></b></p>
+ <div class="bar"><button onclick="sheetOn()">Aperçu / PDF</button>
+ ${E.status==='brouillon'?`<button onclick="saveInv()">Enregistrer le brouillon</button><button class="p" onclick="saveInv(1)">Émettre (numéro définitif)</button>`:''}
+ ${E.status==='emise'?'<button class="p" onclick="E.status=\'payee\';saveInv()">Marquer payée</button>':''}
+ ${E.status==='brouillon'&&S.invoices.find(i=>i.id===E.id)?'<button class="d" onclick="delInv()">Supprimer</button>':''}
+ <button onclick="go(\'invoices\')">Retour</button></div>
+ <p class="m">Une facture émise est verrouillée (numérotation continue). Pour corriger : avoir (prévu en V3).</p></div>`;rt()}
+function rt(){E.lines.forEach((l,n)=>{const e=$('lt'+n);if(e)e.textContent=eur(r2(l.qty*l.price))});const t=tot(E);$('tt').textContent=`Total HT ${eur(t.ht)} · TVA ${eur(t.tva)} · TTC ${eur(t.ttc)}`}
+function addL(id){const x=id?S.items.find(i=>i.id===id):{label:'',unit:'heure',price:0,vat:company(E.cid).franchise?0:20};E.lines.push({label:x.label,qty:1,unit:x.unit,price:x.price,vat:company(E.cid).franchise?0:x.vat});invForm()}
+function nextNo(co,date){const y=date.slice(0,4),p=`${co.prefix||'F'}-${y}-`;const m=S.invoices.filter(i=>i.cid===co.id&&i.number&&i.number.startsWith(p)).map(i=>+i.number.slice(p.length)||0);return p+String(Math.max(0,...m)+1).padStart(3,'0')}
+function saveInv(emit){if(emit){if(!E.clientId||!E.lines.length)return alert('Choisis un client et ajoute au moins une ligne.');
+ if(!confirm('Émettre la facture ? Elle sera verrouillée.'))return;E.status='emise';E.number=nextNo(company(E.cid),E.date);E.due=dueOf(E)}
+ up('invoices',E);save();go('invoices')}
+function delInv(){if(confirm('Supprimer ce brouillon ?')){E.del=true;up('invoices',E);save();go('invoices')}}
+// ====== FACTURE IMPRIMABLE (PDF) ======
+function sheetOn(){const co=company(E.cid),cl=S.clients.find(c=>c.id===E.clientId)||{},t=tot(E),pro=cl.type!=='particulier',col=co.color||'#1f3a5f';
+ const adr=o=>`${esc(o.addr)}<br>${esc(o.zip)} ${esc(o.city)}`;
+ $('sheet').innerHTML=`<div class="np" style="padding:10px;text-align:center"><button class="p" onclick="print()">Imprimer / Enregistrer en PDF</button> <button onclick="$('sheet').className=''">Fermer</button></div>
+ <div class="sh"><h1 style="color:${col}">FACTURE${E.status==='brouillon'?' (brouillon)':''}</h1>
+ <p><b>Numéro :</b> ${esc(E.number||'—')}<br><b>Date d'émission :</b> ${fd(E.date)}<br><b>Échéance :</b> ${fd(dueOf(E))}${E.period?`<br><b>Prestation :</b> ${esc(E.period)}`:''}${E.ref?`<br><b>Réf. client :</b> ${esc(E.ref)}`:''}</p>
+ <div class="tl"><div><b>${esc(co.name)}</b><br>${adr(co)}<br>${esc(co.email)}<br>SIRET ${esc(co.siret)}<br>${co.franchise?'':'TVA '+esc(co.tva)}</div>
+ <div style="text-align:right"><b>${esc(cn(cl))}</b><br>${adr(cl)}${pro&&cl.siret?`<br>SIRET ${esc(cl.siret)}`:''}${pro&&cl.tva?`<br>TVA ${esc(cl.tva)}`:''}</div></div>
+ <table><tr style="background:${col}"><th>Désignation</th><th>Qté</th><th>PU HT</th><th>TVA</th><th style="text-align:right">Total HT</th></tr>
+ ${E.lines.map(l=>`<tr><td>${esc(l.label)}</td><td>${l.qty} ${esc(l.unit)}</td><td>${eur(l.price)}</td><td>${l.vat}%</td><td style="text-align:right">${eur(r2(l.qty*l.price))}</td></tr>`).join('')}</table>
+ <table class="tt"><tr><td>Total HT</td><td style="text-align:right">${eur(t.ht)}</td></tr>
+ ${t.rows.map(([v,b,a])=>`<tr><td>TVA ${v}% (base ${eur(b)})</td><td style="text-align:right">${eur(a)}</td></tr>`).join('')}
+ <tr><td><b>Total TTC</b></td><td style="text-align:right"><b>${eur(t.ttc)}</b></td></tr></table>
+ <div class="ft">${co.iban?`<b>Paiement par virement</b> — Bénéficiaire : ${esc(co.name)} · IBAN : ${esc(co.iban)} · BIC : ${esc(co.bic)}<br>`:''}
+ ${co.franchise?'TVA non applicable, article 293 B du CGI.<br>':''}
+ Paiement à ${co.delay??30} jours. En cas de retard : pénalités au taux de 3 fois le taux d'intérêt légal, exigibles sans rappel${pro?' et indemnité forfaitaire de recouvrement de 40 € (art. L441-10 du Code de commerce)':''}. Pas d'escompte pour paiement anticipé.<br>
+ ${esc(co.name)} — ${esc(co.legal)}</div></div>`;$('sheet').className='on'}
+// ====== SAUVEGARDE & DRIVE ======
+function vSync(){$('main').innerHTML=`<div class="card"><h2>Synchronisation Google Drive</h2>
+ <p class="m">Un fichier « ${DRIVE_FILE} » est créé dans ton Drive (accès limité aux fichiers créés par cette appli). Après connexion, chaque modification est synchronisée automatiquement.</p>
+ <div class="bar"><button class="p" onclick="sync().catch(e=>note('Erreur : '+e.message))">Connecter / Synchroniser maintenant</button></div><p id="note" class="m">${tok?'Connecté.':'Non connecté.'}</p></div>
+ <div class="card"><h2>Sauvegarde manuelle</h2><div class="bar"><button onclick="exp()">Exporter (JSON)</button>
+ <label style="margin:0">Importer <input type="file" accept=".json" onchange="imp(this.files[0])"></label></div></div>`}
+function exp(){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(S,null,1)],{type:'application/json'}));a.download='sauvegarde-facturation-'+today()+'.json';a.click()}
+function imp(f){if(!f)return;f.text().then(t=>{merge(JSON.parse(t));save();go('sync');note('Import fusionné.')})}
+function merge(X){for(const k of['companies','clients','items','invoices']){const m=new Map(S[k].map(r=>[r.id,r]));(X[k]||[]).forEach(r=>{const l=m.get(r.id);if(!l||(r.u||0)>(l.u||0))m.set(r.id,r)});S[k]=[...m.values()]}if(!S.cur)S.cur=X.cur}
+const gis=()=>new Promise(r=>{if(window.google?.accounts)return r();const s=document.createElement('script');s.src='https://accounts.google.com/gsi/client';s.onload=r;document.head.appendChild(s)});
+async function connect(){await gis();return new Promise((ok,ko)=>google.accounts.oauth2.initTokenClient({client_id:CLIENT_ID,scope:'https://www.googleapis.com/auth/drive.file',
+ callback:r=>r.access_token?(tok=r.access_token,ok()):ko(new Error(r.error||'connexion refusée')),error_callback:e=>ko(new Error(e.type||'popup fermée'))}).requestAccessToken())}
+async function api(u,o={},retry=1){const r=await fetch(u,{...o,headers:{Authorization:'Bearer '+tok,...(o.headers||{})}});
+ if(r.status===401&&retry){await connect();return api(u,o,0)}if(!r.ok)throw new Error('Drive '+r.status);return r}
+async function sync(){if(!tok)await connect();note('Synchronisation…');
+ const q=encodeURIComponent(`name='${DRIVE_FILE}' and trashed=false`);
+ const id=(await(await api(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)`)).json()).files[0]?.id;
+ if(id){merge(await(await api(`https://www.googleapis.com/drive/v3/files/${id}?alt=media`)).json());localStorage.setItem('evd',JSON.stringify(S))}
+ const b='evdB',mp=`--${b}\r\nContent-Type: application/json\r\n\r\n${JSON.stringify(id?{}:{name:DRIVE_FILE,mimeType:'application/json'})}\r\n--${b}\r\nContent-Type: application/json\r\n\r\n${JSON.stringify(S)}\r\n--${b}--`;
+ await api(`https://www.googleapis.com/upload/drive/v3/files${id?'/'+id:''}?uploadType=multipart`,{method:id?'PATCH':'POST',headers:{'Content-Type':'multipart/related; boundary='+b},body:mp});
+ note('Synchronisé à '+new Date().toLocaleTimeString('fr-FR'));if(!E&&!K)go(V)}
+go(live('companies').length?'invoices':'companies');
+</script></body></html>
